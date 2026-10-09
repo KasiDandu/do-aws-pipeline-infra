@@ -1,0 +1,21 @@
+name: unlock-state
+
+on:
+  workflow_dispatch:
+    inputs:
+      path:
+        description: "Pipeline path, e.g. dev/ppi-triage/process"
+        required: true
+      lock_id:
+        description: "Lock ID from the 'Error acquiring the state lock' message"
+        required: true
+
+jobs:
+  unlock:
+    uses: KasiDandu/do-gh-shared-actions/.github/workflows/unlock-terraform-state.yaml@release/v1
+    permissions:
+      contents: read
+      id-token: write
+    with:
+      path: ${{ inputs.path }}
+      lock_id: ${{ inputs.lock_id }}

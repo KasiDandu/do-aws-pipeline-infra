@@ -1,0 +1,76 @@
+name: 02-apply-single-env
+
+on:
+  push:
+    paths:
+      - "dev/**"
+      - "test/**"
+      - "preprod/**"
+      - "prod/**"
+  workflow_dispatch:
+    inputs:
+      path:
+        description: "Pipeline path, e.g. dev/ppi-triage/process"
+        required: true
+      action:
+        type: choice
+        options: [plan, apply, destroy]
+        default: plan
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      paths: ${{ steps.find.outputs.paths }}
+      action: ${{ steps.find.outputs.action }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - id: find
+        env:
+          INPUT_PATH: ${{ inputs.path }}
+          INPUT_ACTION: ${{ inputs.action }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            PATHS=$(jq -cn --arg p "$INPUT_PATH" '[$p]')
+            ACTION="$INPUT_ACTION"
+          else
+            CHANGED=$(git diff --name-only HEAD~1 HEAD | grep -E '^(dev|test|preprod|prod)/' || true)
+            PATHS=$(printf '%s\n' "$CHANGED" | sed '/^$/d' | cut -d/ -f1-3 | sort -u | jq -R . | jq -cs .)
+            ACTION=apply
+          fi
+          echo "paths=$PATHS" >> "$GITHUB_OUTPUT"
+          echo "action=$ACTION" >> "$GITHUB_OUTPUT"
+
+  terraform:
+    needs: resolve
+    if: needs.resolve.outputs.paths != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        path: ${{ fromJson(needs.resolve.outputs.paths) }}
+    concurrency:
+      group: tf-${{ matrix.path }}
+      cancel-in-progress: false
+    defaults:
+      run:
+        working-directory: ${{ matrix.path }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init -input=false
+      - name: terraform plan
+        run: terraform plan -input=false -out=tfplan ${{ needs.resolve.outputs.action == 'destroy' && '-destroy' || '' }}
+      - name: terraform apply
+        if: needs.resolve.outputs.action != 'plan'
+        run: terraform apply -input=false -auto-approve tfplan
